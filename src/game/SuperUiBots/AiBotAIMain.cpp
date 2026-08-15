@@ -484,21 +484,19 @@ void AiBotAI::OnLeaveBattleGround()
     if (!me)
         return;
 
-    // Refresh doctrine back to Solo. The bot may have been in PlayerParty
-    // or TeamAuto while grouped for BG; after the match ends we want normal
-    // solo behaviour back unless the player groups with the bot again.
-    m_doctrine = DOCTRINE_SOLO;
-    m_doctrineRole = ROLE_INVALID;
+    // Reset doctrine via RefreshDoctrine — it re-resolves from current
+    // group/party state, so a bot that left BG while still in a human's
+    // party comes back as PlayerParty, otherwise Solo. No need to touch
+    // m_doctrineKind directly: the next RefreshDoctrine tick will pick
+    // up the new kind and (re)create the doctrine unique_ptr if the kind
+    // differs from what it currently holds.
+    m_doctrineKind = DoctrineKind::Solo;   // force the swap trigger
+    RefreshDoctrine();
 
     // Clear any leftover queue state. m_receivedBgInvite is already cleared
     // by the SMSG_BATTLEFIELD_STATUS handler when the bot is in BG; double-
     // clearing is harmless.
     m_receivedBgInvite = false;
-
-    // Re-emit STATE so the UI's Bot Monitor sees the bot back on the base map.
-    // The next UpdateBridgeTick() tick will produce this automatically once
-    // the bot's mapId/position update, so no explicit BridgeSendState call
-    // needed here.
 
     // Stop any leftover BG-related movement. The teleport has already
     // happened; clear any stale MotionMaster state.
