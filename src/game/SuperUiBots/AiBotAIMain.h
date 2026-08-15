@@ -653,6 +653,7 @@ public:
     void BridgeHandleSetEscort(const char* json);   // [FOLLOW-CMD] "{bot} follow {player}" — sets/clears m_escortOverrideName
     void BridgeHandleLoadRotation(const char* json); // [ROTATION] load/replace/clear the custom slate (pipe payload, resolves SpellEntry at load)
     void BridgeHandleRepairItems(const char* json);
+    void BridgeHandleGearUp(const char* json);   // [GEAR-UP] one-shot prep: level, spells, gear, riding (C# sends {level, mount_item, riding})
 
     // --- Quest/combat/event helpers ---
     void SendKillEvent(uint32 creatureEntry, uint32 creatureGuidLow);

@@ -597,12 +597,14 @@ void AiBotAI::BridgeProcessLine(const char* line)
         BridgeHandleSetTask(line);
     else if (strcmp(msgType, "COMBAT_DIRECTIVE") == 0)
         BridgeHandleCombatDirective(line);
-     else if (strcmp(msgType, "TAKE_FLIGHT") == 0)
+    else if (strcmp(msgType, "TAKE_FLIGHT") == 0)
         BridgeHandleTakeFlight(line);
     else if (strcmp(msgType, "SELL_ITEMS") == 0)
         BridgeHandleSellItems(line);
     else if (strcmp(msgType, "REPAIR_AT_NPC") == 0)
-       BridgeHandleRepairItems(line);
+        BridgeHandleRepairItems(line);
+    else if (strcmp(msgType, "GEAR_UP") == 0)
+        BridgeHandleGearUp(line);
     else if (strcmp(msgType, "RESURRECT") == 0)
         BridgeHandleResurrect(line);
     else if (strcmp(msgType, "TRAIN_AT_NPC") == 0)
@@ -612,9 +614,9 @@ void AiBotAI::BridgeProcessLine(const char* line)
     else if (strcmp(msgType, "QUEST_CAST") == 0)
         BridgeHandleQuestCast(line);
     else if (strcmp(msgType, "FORM_GROUP") == 0)
-       BridgeHandleFormGroup(line);
+        BridgeHandleFormGroup(line);
     else if (strcmp(msgType, "DISBAND_GROUP") == 0)
-       BridgeHandleDisbandGroup(line);
+        BridgeHandleDisbandGroup(line);
     else if (strcmp(msgType, "SET_ESCORT") == 0)
         BridgeHandleSetEscort(line);
     else if (strcmp(msgType, "LOAD_ROTATION") == 0)
@@ -2395,7 +2397,109 @@ void AiBotAI::BridgeHandleRepairItems(const char* json)
     snprintf(eventData, sizeof(eventData), "cost=%u|copper_total=%u", totalCost, me->GetMoney());
     BridgeSendEvent("REPAIR_ACK", eventData);
 }
- 
+
+// ============================================================
+// BridgeHandleGearUp — one-shot prep for an already-spawned bot.
+//
+// Re-uses every existing helper the codebase already has — no reinvented
+// logic, no duplicated levelling / talent / spec / gear pipelines. Wired to
+// the bridge so a fleet bot that was originally loaded at level 1 can be
+// promoted without a server restart.
+//
+// Order matters — PopulateSpellData rebuilds the bot's internal spell
+// reference list from me->GetSpellMap(), so every LearnSpell call must run
+// BEFORE it. Same constraint applies to AddAllSpellReagents (iterates the
+// populated list) and UpdateSkillsToMaxSkillsForLevel (uses GetLevel()).
+// The sequence below keeps the level set early, all learning before any
+// rebuild, then refreshes the derived caches last.
+//
+// Payload (all optional):
+//   level       uint  target level (default 60)
+//   mount_item  uint  item entry to AddItemToInventory (default 0 = skip)
+//   riding      bool  teach Apprentice + Journeyman Riding (default true)
+//
+// C# side mirrors this in BotBridgeService.SendGearUpAsync. Same defaults.
+//
+// Dispatch: BridgeProcessLine → else if (strcmp(msgType,"GEAR_UP")==0) BridgeHandleGearUp(line);
+// HEADER:    void BridgeHandleGearUp(const char* json);
+// ============================================================
+void AiBotAI::BridgeHandleGearUp(const char* json)
+{
+    if (!me || !me->IsInWorld())
+        return;
+
+    const char* payload = strstr(json, "\"payload\"");
+    if (!payload) payload = json;
+
+    int  targetLevel = 60;
+    int  mountItem   = 0;
+    int  teachRidingRaw = 1;          // default: yes
+    JsonExtractInt(payload, "level",      targetLevel);
+    JsonExtractInt(payload, "mount_item", mountItem);
+    JsonExtractInt(payload, "riding",     teachRidingRaw);
+    bool teachRiding = (teachRidingRaw != 0);
+
+    if (targetLevel < 1)   targetLevel = 1;
+    if (targetLevel > 80)  targetLevel = 80;
+
+    // 1. Level up to target — gives the level field a sane value for every
+    //    subsequent helper (skill max uses it; premade spec templates key on it).
+    if (me->GetLevel() != targetLevel)
+    {
+        me->GiveLevel((uint32)targetLevel);
+        me->InitTalentForLevel();
+        me->SetUInt32Value(PLAYER_XP, 0);
+    }
+
+    // 2. Skill max — depends on the new level. Run BEFORE learning spells so
+    //    weapon/armor/etc cap to the right value while the spell map is still
+    //    small (no chance of PopulateSpellData clobbering).
+    me->UpdateSkillsToMaxSkillsForLevel();
+
+    // 3. Learn spells. PopulateSpellData rebuilds the bot's internal spell
+    //    reference list from me->GetSpellMap() at the end — every LearnSpell
+    //    call must be before that rebuild or the spell is invisible to the AI.
+    LearnPremadeSpecForClass();
+
+    if (teachRiding)
+    {
+        if (!me->HasSpell(33388)) me->LearnSpell(33388u, false);   // Apprentice Riding
+        if (targetLevel >= 60 && !me->HasSpell(33391))
+            me->LearnSpell(33391u, false);                          // Journeyman Riding
+        // The upgrade flag unlocks the 100% speed modifier on 60% mounts.
+        me->SetCharacterFlag(CHARACTER_FLAG_MOUNT_UPGRADED, true);
+    }
+
+    // 4. Role + gear. AutoAssignRole is harmless if m_role is already set.
+    if (m_role == ROLE_INVALID)
+        AutoAssignRole();
+    AutoEquipGear(sWorld.getConfig(CONFIG_UINT32_BATTLE_BOT_AUTO_EQUIP));
+
+    // 5. Rebuild the AI's spell reference list NOW — after every LearnSpell
+    //    call. AddAllSpellReagents iterates this list, so it must be populated
+    //    first.
+    ResetSpellData();
+    PopulateSpellData();
+    AddAllSpellReagents();
+
+    // 6. Optional mount item. AddItemToInventory (inherited from
+    //    CombatBotBaseAI) auto-equips it; the bot can summon from it on
+    //    next idle tick.
+    if (mountItem > 0)
+        AddItemToInventory((uint32)mountItem, 1);
+
+    me->SetHealthPercent(100.0f);
+    me->SetPowerPercent(me->GetPowerType(), 100.0f);
+
+    // Persist (the in-memory state is great, but the playerbot table is
+    // the source of truth on next server restart). SaveToDB on Player
+    // flushes all sub-tables.
+    me->SaveToDB();
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+        "[AIBOT-GEARUP] %s: level=%d, spec learned, gear equipped, skills maxed, riding=%s, mount_item=%d",
+        me->GetName(), targetLevel, teachRiding ? "yes" : "no", mountItem);
+}
 
 void AiBotAI::BridgeHandleUseGameObject(const char* json)
 {
