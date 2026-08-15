@@ -422,6 +422,7 @@ public:
     void UpdateAI(uint32 const diff) override;
     void OnPacketReceived(WorldPacket const* packet) override;
     void MovementInform(uint32 MovementType, uint32 Data = 0) override;
+    void OnLeaveBattleGround() override;   // [BG-LEAVE] reset doctrine + clear BG state when match ends
 
     // --- SUI possession (SuiPossess.cpp) ---
     // While a real player drives this bot, every autonomous behaviour is
@@ -701,6 +702,7 @@ public:
     bool m_loggedFirstUpdate = false;
     bool m_freshSpawn = false;
     bool m_possessed = false;         // SUI possession: autonomous behaviour suspended
+    bool m_wasInBG = false;           // [BG-LEAVE] tracks InBattleGround() transitions; OnLeaveBattleGround fires on true→false
     // Set by AttachToRealCharacter: inert PlayerBotEntry (never registered with
     // PlayerBotMgr) absorbing the base class's requestRemoval writes.
     std::unique_ptr<PlayerBotEntry> m_ownedDummyEntry;

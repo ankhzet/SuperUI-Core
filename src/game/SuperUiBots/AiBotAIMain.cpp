@@ -472,6 +472,40 @@ void AiBotAI::OnPacketReceived(WorldPacket const* packet)
     CombatBotBaseAI::OnPacketReceived(packet);
 }
 
+// [BG-LEAVE] Called when InBattleGround() flips true→false (BG ended,
+// deserter kicked, premature end, etc.). The BG system has already
+// auto-teleported the bot back to its entry point via
+// HandleMoveWorldportAckOpcode — this hook just resumes normal AI state
+// and re-emits a STATE event so the UI sees the bot is back on the open
+// world. Also clears BG-related transient state so the bot doesn't
+// immediately re-queue the same match.
+void AiBotAI::OnLeaveBattleGround()
+{
+    if (!me)
+        return;
+
+    // Refresh doctrine back to Solo. The bot may have been in PlayerParty
+    // or TeamAuto while grouped for BG; after the match ends we want normal
+    // solo behaviour back unless the player groups with the bot again.
+    m_doctrine = DOCTRINE_SOLO;
+    m_doctrineRole = ROLE_INVALID;
+
+    // Clear any leftover queue state. m_receivedBgInvite is already cleared
+    // by the SMSG_BATTLEFIELD_STATUS handler when the bot is in BG; double-
+    // clearing is harmless.
+    m_receivedBgInvite = false;
+
+    // Re-emit STATE so the UI's Bot Monitor sees the bot back on the base map.
+    // The next UpdateBridgeTick() tick will produce this automatically once
+    // the bot's mapId/position update, so no explicit BridgeSendState call
+    // needed here.
+
+    // Stop any leftover BG-related movement. The teleport has already
+    // happened; clear any stale MotionMaster state.
+    if (me->GetMotionMaster()->GetCurrentMovementGeneratorType())
+        me->StopMoving();
+}
+
 void AiBotAI::MovementInform(uint32 MovementType, uint32 Data)
 {
     if (MovementType == POINT_MOTION_TYPE)
@@ -1029,6 +1063,51 @@ void AiBotAI::UpdateAI(uint32 const diff)
             SendBattlefieldPortPacket();
             m_receivedBgInvite = false;
         }
+    }
+
+    // [BG-LEAVE] Detect BG end. The BG system auto-teleports the bot back to its
+    // entry point via WorldSession::HandleMoveWorldportAckOpcode the moment the
+    // match ends — that's server-side and fires for both real players and bot
+    // sessions. What the AI needs is to RESUME normal behaviour at that point
+    // (refresh doctrine back to Solo, clear BG-related state, re-emit STATE so
+    // the UI sees the bot is back on the open world). Same pattern BattleBotAI
+    // uses at BattleBotAI.cpp:700-707 — m_wasInBG tracks the transition; the
+    // virtual OnLeaveBattleGround() default is a no-op, this override does
+    // the cleanup. The flag is set in the BG-IN branch below so the LEAVE
+    // branch fires on the next tick after the BG system clears GetBattleGroundId().
+    if (m_wasInBG && !me->InBattleGround())
+    {
+        m_wasInBG = false;
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "[AIBOT-BG] %s: BG ended — resuming normal AI", me->GetName());
+        OnLeaveBattleGround();
+    }
+    if (!m_wasInBG && me->InBattleGround())
+    {
+        m_wasInBG = true;
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "[AIBOT-BG] %s: entered BG — suppressing autonomous tasks", me->GetName());
+    }
+
+    // [BG-LEAVE] While in BG, skip normal task acquisition / kill targeting / loot.
+    // The BG system drives position + combat inside the instance; autonomous
+    // AI fighting here would double-up on the BG's own combat logic. The
+    // bridge tick still runs (keeps STATE flowing to the UI), and the LEAVE
+    // transition above fires the moment the bot's InBattleGround() flips.
+    // We use continue rather than return so bridge ticks keep firing.
+    if (m_wasInBG)
+    {
+        UpdateBridgeTick();
+        // One-time log on first successful update tick (same shape as the
+        // below non-BG path) so a bot that joined BG on its first tick still
+        // logs the [AIBOT] UpdateAI active line — purely cosmetic.
+        if (!m_loggedFirstUpdate)
+        {
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "[AIBOT] %s (guid %u) UpdateAI active (in BG) - class %u, level %u, zone %u, map %u",
+                me->GetName(), me->GetGUIDLow(), me->GetClass(), me->GetLevel(),
+                me->GetZoneId(), me->GetMapId());
+            m_loggedFirstUpdate = true;
+            me->SetSaveDisabled(false);
+        }
+        return;
     }
 
     // --- Bridge: connect + recv + periodic state ---

@@ -3390,6 +3390,17 @@ void CombatBotBaseAI::OnPacketReceived(WorldPacket const* packet)
             if (!me)
                 return;
 
+            // The BG system sends this packet with one of:
+            //   STATUS_WAIT_QUEUE (1) — bot in queue
+            //   STATUS_WAIT_JOIN  (2) — bot invited, has 60s to enter
+            //   STATUS_IN_PROGRESS (3) — match running
+            //   STATUS_WAIT_LEAVE  (4) — match over, leave accepted
+            // STATUS_WAIT_LEAVE means the bot just exited the BG instance. The
+            // BG system auto-teleports via HandleMoveWorldportAckOpcode, so
+            // GetBattleGroundId() may already be 0 by the time we get here;
+            // the caller's m_wasInBG transition in AiBotAI::UpdateAI covers
+            // the resume path. Clearing m_receivedBgInvite is belt-and-braces
+            // so a leftover invite from the same match can't double-port.
             if (me->IsBeingTeleported() || me->InBattleGround())
                 m_receivedBgInvite = false;
             else

@@ -82,6 +82,7 @@ public:
     }
 
     virtual void OnPacketReceived(WorldPacket const* packet) override;
+    virtual void OnLeaveBattleGround() {}   // [BG-LEAVE] called when InBattleGround() flips true→false; base is no-op, subclasses override
     void SendBattlefieldPortPacket();
     void SendBattlemasterJoinPacket(uint8 battlegroundId);
     void SendAreaTriggerPacket(uint32 areaTriggerId);
