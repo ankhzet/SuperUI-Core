@@ -1009,6 +1009,28 @@ void AiBotAI::UpdateAI(uint32 const diff)
     // and swap on change, before any acquisition or combat decision below consults m_doctrine.
     RefreshDoctrine();
 
+    // [BG-ACCEPT] Auto-accept a pending Battleground invitation. The packet-level
+    // accept (SMSG_BATTLEFIELD_STATUS) is already detected in
+    // CombatBotBaseAI::OnPacketReceived and sets m_receivedBgInvite = true. The
+    // helper CombatBotBaseAI::SendBattlefieldPortPacket() walks every queue
+    // type, finds the one this bot is invited to, and calls
+    // HandleBattleFieldPortOpcode with action=1 (port in). BattleBotAI and
+    // PartyBotAI both call this from their UpdateAI — AiBotAI was the lone
+    // holdout. Without this, the bot stays on the base WSG/AB/AV map while
+    // its group leader enters the BG instance. Config-gated so ops can turn
+    // it off for solo content.
+    if (sWorld.getConfig(CONFIG_BOOL_AI_BOT_AUTO_ACCEPT_BG) && m_receivedBgInvite)
+    {
+        if (!me->InBattleGround() && !me->IsBeingTeleported())
+        {
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                "[AIBOT-BG] %s: BG invite detected — accepting and porting in",
+                me->GetName());
+            SendBattlefieldPortPacket();
+            m_receivedBgInvite = false;
+        }
+    }
+
     // --- Bridge: connect + recv + periodic state ---
     UpdateBridgeTick();
 
